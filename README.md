@@ -104,4 +104,7 @@ This project is licensed under the GPL3 License. See the LICENSE file for detail
 
 Have fun exploring the world of Bitcoin mining! 🚀
 
+### Credits
+[Volkan Kücükbudak](https://github.com/volkansah)
+
 
