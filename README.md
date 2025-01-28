@@ -1,7 +1,7 @@
 # Bitcoin Lottery Miner
 ### your chance 1: 45.000.000.000.000.000.000.000 (difficulty on 28.01.2025) for 6,25 BTC
 
-Welcome to the **Bitcoin Lottery Miner**, a unique simulation and mining tool for both fun and educational purposes! This project offers a fresh take on "lottery mining," where the challenge is to find a valid Bitcoin block with a specific difficulty target, much like the real Bitcoin mining process.
+Welcome to the **Bitcoin Lottery Miner**, a unique simulation and mining tool for both fun and educational purposes! This project offers a fresh take on "lottery mining," where the challenge is to find a valid Bitcoin block with a specific difficulty target, much like the real Bitcoin mining process. Wait for my coffee 😅
 
 ## 🚀 Features
 
