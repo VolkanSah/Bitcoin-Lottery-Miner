@@ -1,3 +1,6 @@
+# DO NOT STEAL FREE CODE FROM DEVS AND PUT YOUR NAME ON IT! I WILL GET YOU TRUST ME I AM BETTER THAN YOU! AMD IF I GET YOU THAN I WILL F*** YOUR HOLE LIFE!
+# Copyright Volkan Kücükbudak
+
 import hashlib
 import time
 import random
