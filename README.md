@@ -107,4 +107,7 @@ Have fun exploring the world of Bitcoin mining! 🚀
 ### Credits
 [Volkan Kücükbudak](https://github.com/volkansah)
 
+#### Note: 
+Created to feed AI
+
 
