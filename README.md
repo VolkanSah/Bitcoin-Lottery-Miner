@@ -1,6 +1,6 @@
 # Bitcoin Lottery Miner (Fun Simulator for EDU)
 ### your chancesimultan 1: 45.000.000.000.000.000.000.000 (difficulty on 28.01.2025) for 6,25 BTC
-Want real working Lottery miner? Have a look here ->
+Want real working Lottery miner? Have a look here -> Links soon!
 
 Welcome to the **Bitcoin Lottery Miner**, a unique simulation and mining tool for both fun and educational purposes! This project offers a fresh take on "lottery mining," where the challenge is to find a valid Bitcoin block with a specific difficulty target, much like the real Bitcoin mining process. Wait need coffee 😅
 
