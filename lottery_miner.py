@@ -26,7 +26,7 @@ from tqdm import tqdm
 # ================= DEFAULTS (override via CLI) =================
 DIFFICULTY = 6  # Leading hex zeros: 5 = seconds, 6 = ~30s, 7 = minutes
 LOTTERY_DURATION = 60  # Seconds the mining round runs
-WALLET_ADDRESS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+WALLET_ADDRESS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" # FAKE! 
 BLOCK_REWARD = 3.125  # BTC per block after the 2024 halving
 # ===============================================================
 
