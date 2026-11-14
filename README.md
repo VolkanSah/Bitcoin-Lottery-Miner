@@ -1,114 +1,104 @@
-# Bitcoin Lottery Miner (Fun Simulator for EDU)
-### your chancesimultan 1: 45.000.000.000.000.000.000.000 (difficulty on 28.01.2025) for 6,25 BTC
-Want real working Lottery miner? Have a look here -> Links soon!
+# Bitcoin Lottery Miner
 
-Welcome to the **Bitcoin Lottery Miner**, a unique simulation and mining tool for both fun and educational purposes! This project offers a fresh take on "lottery mining," where the challenge is to find a valid Bitcoin block with a specific difficulty target, much like the real Bitcoin mining process. Wait need coffee 😅
+A small Python toy that mines a fake Bitcoin block on your CPU. Pure fun, built for learning how proof-of-work actually works.
 
-## 🚀 Features
+**No real coins, no network, no pool. Nothing gets sent anywhere.** If you "win", you get a hash on your screen and a warm fuzzy feeling.
 
-- **Custom Block Generation**: Generates rudimentary Bitcoin blocks in Python, including fields like `version`, `previous_block_hash`, `merkle_root`, `timestamp`, and `nonce`.
-- **Difficulty-Based Mining**: Simulates the Proof-of-Work process with customizable difficulty.
-- **Progress Visualization**: Includes a progress bar for real-time mining feedback.
-- **Standalone Mining**: No external miners required; everything runs directly in Python.
-- **Fun and Learning**: Perfect for understanding the mechanics of Bitcoin mining and experimenting with block creation.
+## What it does
 
-## 🌟 What Makes This Project Unique?
+- Builds a real 80-byte Bitcoin block header (version, prev hash, Merkle root, timestamp, bits, nonce)
+- Puts a Coinbase TX with your wallet address plus a few dummy TXs into a Merkle tree
+- Hashes with double SHA-256, same as Bitcoin
+- Checks `hash < target` like a real miner, with a proper compact `bits` field
+- Uses all your CPU cores
+- Re-verifies every block it finds from scratch
+- Shows your odds before it starts, so you know what you're getting into
 
-Unlike other "lottery miners" that rely on external mining tools or pools, this project:
+## Quick start
 
-1. **Runs Entirely in Python**: No need for external mining software like `bfgminer`. The script itself handles the entire mining logic.
-2. **Standalone Blocks**: Generates and hashes blocks directly in code, simulating the real-world mining process.
-3. **Interactive Simulation**: Focuses on learning and having fun while exploring mining concepts.
-4. **Simple Yet Expandable**: Provides a solid foundation for further experimentation, like adding real blockchain network interaction or enhancing block structure.
-
-## 📋 Requirements
-
-- Python 3.6 or higher
-- [tqdm](https://pypi.org/project/tqdm/) (for the progress bar)
-
-Install `tqdm` via pip:
 ```bash
+git clone https://github.com/VolkanSah/Bitcoin-Lottery-Miner
+cd Bitcoin-Lottery-Miner
 pip install tqdm
+python lottery_miner.py
 ```
 
-## 🛠️ How to Use
+Needs Python 3.9+ (and `tqdm` for the progress bar, that's it).
 
-1. Clone the repository and navigate to the project directory:
-   ```bash
-   git clone https://github.com/VolkanSah/Bitcoin-Lottery-Miner /
-   cd Bitcoin-Lottery-Miner 
-   ```
-2. Open the script and update the `WALLET_ADDRESS` variable with your Bitcoin wallet address:
-   ```python
-   WALLET_ADDRESS = "<YourBitcoinAddress>"
-   ```
-3. Run the script:
-   ```bash
-   python lottery_miner.py
-   ```
-4. Choose your difficulty and watch the magic happen! If a valid block is found, the script simulates sending the reward to your wallet address.
+## Options
 
-## ⚙️ Configuration
+```bash
+python lottery_miner.py -d 6 -t 120 -j 4 -w <your-address>
+```
 
-You can customize the following parameters in the script:
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `-d`, `--difficulty` | Leading hex zeros the hash needs | `6` |
+| `-t`, `--time` | Max seconds to mine | `60` |
+| `-j`, `--workers` | CPU processes | all cores |
+| `-w`, `--wallet` | Address baked into the Coinbase TX | example address |
 
-- **DIFFICULTY**: Number of leading zeros required in the block hash.
-- **LOTTERY_DURATION**: Time (in seconds) the mining process runs.
-- **WALLET_ADDRESS**: Your Bitcoin wallet address (used for simulation).
+Rough feeling for difficulty (depends on your CPU):
 
-## 🔍 Example Output
+- `5` is done in a second or so
+- `6` takes around half a minute
+- `7` takes minutes, so give it more time with `-t`
+
+Each extra zero makes it 16x harder.
+
+## Example run
 
 ```text
-🚀 Bitcoin Mining started! Difficulty: 10
-Wallet Address: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
-Duration: 60 seconds
+🚀 Bitcoin Lottery Miner started! (Difficulty: 5)
+💳 Wallet : 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa (baked into Coinbase TX & Merkle Root)
+⏱️  Duration: 30s | 🧵 Workers: 2
 
-Mining-Progress:  50%|█████████         | 30/60 [00:30<00:30,  1.00s/s]
+📊 --- LOTTERY ODDS (~2,798,944 H/s total) ---
+🎯 Difficulty 5: 1 in 1,048,576 hashes (~0.4s avg)
+🌍 Real BTC network (~Diff 19): ~856,010,131 years with this script!
 
-🎉 WINNER! Block found!
-🔑 Hash: 00000000001d3a2b...
-📜 Block: {'version': 1, 'previous_block_hash': '000000...', 'merkle_root': '', 'timestamp': 1674873294, 'nonce': 938475}
-⏱️ Time: 35.12 seconds
-The reward is sent to the wallet address 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa (simulated).
+🎉 WINNER! Valid Block found (verified)!
+🔑 Block Hash   : 00000be0e85204a88f76df41d34dca1d4b9b8253831aed2ed19d6b51be5a7ddd
+🎲 Winning Nonce: 153,301
 ```
 
-## 🤔 How It Works
+Your numbers will differ, it's a lottery after all.
 
-1. **Block Creation**: The script generates a simple block template and increments the `nonce` value to attempt different hashes.
-2. **Hash Calculation**: Each block's data is hashed using SHA-256.
-3. **Proof of Work**: The hash is checked against the difficulty (number of leading zeros).
-4. **Reward Simulation**: If a valid hash is found, the block is considered mined, and a reward is simulated.
+## How it works
 
-## 🧠 Learning Focus
+1. Build the 76 static header bytes (everything except the nonce).
+2. Hash the first 64 of those once and keep the state (the "midstate"). Every nonce only needs the rest, which is a trick real miners use too.
+3. Each worker gets its own slice of the 32-bit nonce space and tries them one by one.
+4. Hash is double SHA-256, read as a little-endian number, compared against the target.
+5. First worker to find one stops the others. The block gets verified again from zero.
 
-This project simplifies the mining process and focuses on:
-- Understanding how Bitcoin blocks are created and validated.
-- Experimenting with Proof-of-Work concepts.
-- Exploring the role of difficulty and randomness in mining.
+## Is this real mining? 
 
-## 🚧 Future Enhancements
+Nope, and it can't win real Bitcoin even if you get lucky. The block you find is only valid by *our* rules:
 
-- Add realistic Merkle tree implementation for transactions.
-- Integrate with a Bitcoin node to submit mined blocks.
-- Visualize mining statistics (e.g., hash rate, attempts).
-- Support for multi-threaded mining.
+- It doesn't point to the real chain tip
+- The target is way easier than the real network's
+- The Coinbase TX is just a string, not a properly serialized transaction
 
-## 🤝 Contributions
+The real network needs more than 10^23 hashes per block on average. This script does a few hundred thousand per second. Do the math, or let the script do it for you, it prints it on start.
 
-Feel free to fork this repository, submit pull requests, or suggest improvements. Let’s make this project even more fun and educational!
+For real Regtest fun (your own local node where mining is instant), that's a good next step: grab a template with `getblocktemplate`, build the block, `submitblock`. Not in here yet.
 
-## 📜 License
+## Safety note
 
-This project is licensed under the GPL3 License. See the LICENSE file for details.
+You only ever need a **public** address. Never put a private key or seed phrase into any script you found on the internet. Not here, not anywhere.
 
----
+## Ideas 
 
-Have fun exploring the world of Bitcoin mining! 🚀
+- Real serialized Coinbase TX and address validation
+- Save found blocks as JSON
+- Regtest mode with a local `bitcoind`
+- Tests against the genesis block
 
-### Credits
-[Volkan Kücükbudak](https://github.com/volkansah)
+PRs and ideas welcome. Break it, improve it, make it faster.
 
-#### Note: 
-Created to feed AI
+## License
 
+AGPL3, see [LICENSE](LICENSE).
 
+Made by [Volkan Kücükbudak](https://github.com/volkansah)
