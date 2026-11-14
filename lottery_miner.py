@@ -1,187 +1,247 @@
 # Bitcoin Lottery Miner (Educational Simulator)
 # Copyright (C) 2025 Volkan Kücükbudak
 # Licensed under the GNU General Public License v3.0 (GPLv3)
+"""Educational Bitcoin-style miner.
 
+Optimizations compared to the naive version:
+  * SHA-256 midstate: the first 64 header bytes never change, so they are
+    hashed once and the state is copied for every nonce (like real miners).
+  * Real target comparison (hash < target) instead of hex string checks.
+  * Correct compact "bits" field in the header, decoded back to the target.
+  * Multiprocessing: the nonce space is split across all CPU cores.
+  * Time/UI checks only once per batch, never per hash.
+  * Generic Merkle tree (odd levels duplicate the last hash, like Bitcoin).
+  * Every found block is re-verified from scratch.
+"""
+
+import argparse
 import hashlib
+import multiprocessing as mp
+import queue
 import struct
 import time
+
 from tqdm import tqdm
 
-# ================= CONFIGURATION =================
-DIFFICULTY = (
-    6  # Leading hex zeros (5 = easy/seconds, 6 = medium/~30s, 7 = hard/minutes)
-)
-LOTTERY_DURATION = 60  # Duration of the mining round in seconds
-WALLET_ADDRESS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"  # Your Bitcoin address
-BLOCK_REWARD = 3.125  # Current BTC reward after the 2024 halving
-# =================================================
+# ================= DEFAULTS (override via CLI) =================
+DIFFICULTY = 6  # Leading hex zeros: 5 = seconds, 6 = ~30s, 7 = minutes
+LOTTERY_DURATION = 60  # Seconds the mining round runs
+WALLET_ADDRESS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+BLOCK_REWARD = 3.125  # BTC per block after the 2024 halving
+# ===============================================================
+
+BATCH = 20_000  # Hashes per worker between stop/progress checks
+MAX_NONCE = 0xFFFFFFFF
+_PACK_NONCE = struct.Struct("<I").pack
 
 
+# ------------------------- Bitcoin primitives -------------------------
 def double_sha256(data: bytes) -> bytes:
-  """Performs standard Bitcoin Double-SHA256 hashing."""
-  return hashlib.sha256(hashlib.sha256(data).digest()).digest()
+    """Standard Bitcoin hash: SHA256(SHA256(data))."""
+    return hashlib.sha256(hashlib.sha256(data).digest()).digest()
+
+
+def merkle_root(tx_hashes: list[bytes]) -> bytes:
+    """Builds a Merkle root from transaction hashes (any number >= 1)."""
+    level = tx_hashes
+    while len(level) > 1:
+        if len(level) % 2:  # Bitcoin duplicates the last hash on odd levels
+            level = level + [level[-1]]
+        level = [
+            double_sha256(level[i] + level[i + 1])
+            for i in range(0, len(level), 2)
+        ]
+    return level[0]
 
 
 def build_merkle_root(wallet_address: str) -> bytes:
-  """Creates a Coinbase transaction (including your wallet) and combines it
+    """Coinbase TX (reward -> your wallet) + dummy TXs -> Merkle root.
 
-  with dummy transactions to calculate a realistic 32-byte Merkle Root.
-  """
-  # 1. Coinbase Transaction (mints new Bitcoin to your wallet)
-  coinbase_tx = f"Coinbase: {BLOCK_REWARD} BTC -> {wallet_address}".encode(
-      "utf-8"
-  )
-  tx1_hash = double_sha256(coinbase_tx)
-
-  # 2. Dummy Transactions to simulate a block
-  tx2_hash = double_sha256(b"Alice sends 0.5 BTC to Bob")
-  tx3_hash = double_sha256(b"Charlie sends 1.2 BTC to Dave")
-  tx4_hash = double_sha256(b"Eve sends 0.1 BTC to Mallory")
-
-  # Build Merkle Tree (Pairwise hashing)
-  branch1 = double_sha256(tx1_hash + tx2_hash)
-  branch2 = double_sha256(tx3_hash + tx4_hash)
-  merkle_root = double_sha256(branch1 + branch2)
-
-  return merkle_root
+    Note: the TXs are plain strings, not real serialized transactions.
+    """
+    txs = [
+        f"Coinbase: {BLOCK_REWARD} BTC -> {wallet_address}",
+        "Alice sends 0.5 BTC to Bob",
+        "Charlie sends 1.2 BTC to Dave",
+        "Eve sends 0.1 BTC to Mallory",
+    ]
+    return merkle_root([double_sha256(t.encode()) for t in txs])
 
 
-def calculate_odds(hashrate: float, difficulty: int):
-  """Calculates and prints the mathematical odds of winning."""
-  expected_hashes = 16**difficulty
-  expected_seconds = expected_hashes / hashrate if hashrate > 0 else 0
-
-  # Real Bitcoin difficulty approx. requires ~19 leading hex zeros
-  btc_real_hashes = 16**19
-  btc_years = (
-      (btc_real_hashes / hashrate) / (60 * 60 * 24 * 365) if hashrate > 0 else 0
-  )
-
-  print(f"📊 --- LOTTERY ODDS (at ~{hashrate:,.0f} H/s) ---")
-  print(
-      f"🎯 Target (Difficulty {difficulty}): 1 in {expected_hashes:,} hashes"
-      f" (~{expected_seconds:.1f} sec on average)"
-  )
-  print(
-      "🌍 Real BTC Network (~Diff 19): 1 in ~75 sextillion hashes"
-      f" (~{btc_years:,.0f} years with this Python script!)\n"
-  )
+def target_to_bits(target: int) -> int:
+    """Encodes a 256-bit target into Bitcoin's compact 'bits' format."""
+    size = (target.bit_length() + 7) // 8
+    if size <= 3:
+        compact = target << (8 * (3 - size))
+    else:
+        compact = target >> (8 * (size - 3))
+    if compact & 0x00800000:  # sign bit must stay clear
+        compact >>= 8
+        size += 1
+    return (size << 24) | compact
 
 
-def mine_block():
-  print(f"\n🚀 Bitcoin Lottery Miner started! (Difficulty: {DIFFICULTY})")
-  print(
-      f"💳 Wallet Address : {WALLET_ADDRESS} (baked into Coinbase TX & Merkle"
-      " Root)"
-  )
-  print(f"⏱️  Max Duration   : {LOTTERY_DURATION} seconds\n")
+def bits_to_target(bits: int) -> int:
+    """Decodes compact 'bits' back to the full target."""
+    size, compact = bits >> 24, bits & 0x007FFFFF
+    if size <= 3:
+        return compact >> (8 * (3 - size))
+    return compact << (8 * (size - 3))
 
-  # Prepare static block header fields (first 76 bytes of the 80-byte Bitcoin header)
-  version = 1
-  prev_block_hash = bytes.fromhex("00" * 32)  # 32 bytes dummy previous block
-  merkle_root = build_merkle_root(WALLET_ADDRESS)  # 32 bytes Merkle Root
-  timestamp = int(time.time())
-  bits = DIFFICULTY  # Simplified difficulty target representation
 
-  # Pack the static 76 bytes in Little-Endian format (<I32s32sII)
-  static_header = struct.pack(
-      "<I32s32sII", version, prev_block_hash, merkle_root, timestamp, bits
-  )
-  target_prefix = "0" * DIFFICULTY
+def difficulty_to_bits(difficulty: int) -> int:
+    """N leading hex zeros == hash < 2^(256 - 4N)."""
+    return target_to_bits(1 << (256 - 4 * difficulty))
 
-  # Quick 0.5s benchmark to calculate odds before starting the main bar
-  bench_start = time.time()
-  bench_hashes = 0
-  while time.time() - bench_start < 0.5:
-    double_sha256(static_header + struct.pack("<I", bench_hashes))
-    bench_hashes += 1
-  estimated_hashrate = bench_hashes / (time.time() - bench_start)
-  calculate_odds(estimated_hashrate, DIFFICULTY)
 
-  # Start actual mining
-  start_time = time.time()
-  nonce = 0
-  winner = None
-  batch_size = 25000  # Only update UI every 25k hashes for maximum performance
+def verify_block(static_header: bytes, nonce: int, bits: int) -> str:
+    """Recomputes the hash from scratch. Raises if it is not a valid block."""
+    digest = double_sha256(static_header + _PACK_NONCE(nonce))
+    if int.from_bytes(digest, "little") >= bits_to_target(bits):
+        raise ValueError("Block verification failed!")
+    return digest[::-1].hex()  # display order is big-endian
 
-  with tqdm(
-      total=LOTTERY_DURATION,
-      desc="⛏️  Mining",
-      unit="s",
-      bar_format=(
-          "{l_bar}{bar}| {n_fmt}/{total_fmt}s [{elapsed}<{remaining},"
-          " {postfix}]"
-      ),
-  ) as pbar:
-    while True:
-      # Pack the 4-byte nonce (Total header = 76 + 4 = 80 bytes!)
-      header = static_header + struct.pack("<I", nonce)
 
-      # Double-SHA256 and reverse bytes (Bitcoin uses Little-Endian internally, Big-Endian for display)
-      block_hash = double_sha256(header)[::-1].hex()
+# ----------------------------- Mining core -----------------------------
+def worker(static_header, target, start, end, stop, counter, results):
+    """Searches nonces in [start, end). Runs in its own process."""
+    # Midstate: first 64 bytes are constant -> hash them only once.
+    midstate = hashlib.sha256(static_header[:64])
+    tail = static_header[64:]  # remaining 12 header bytes (before the nonce)
+    sha256 = hashlib.sha256
+    from_bytes = int.from_bytes
 
-      if block_hash.startswith(target_prefix):
-        winner = {
-            "nonce": nonce,
-            "hash": block_hash,
-            "merkle_root": merkle_root.hex(),
-            "timestamp": timestamp,
-            "found_at": time.time() - start_time,
-        }
-        break
+    for batch_start in range(start, end, BATCH):
+        if stop.is_set():
+            return
+        batch_end = min(batch_start + BATCH, end)
+        for nonce in range(batch_start, batch_end):
+            h = midstate.copy()
+            h.update(tail + _PACK_NONCE(nonce))
+            digest = sha256(h.digest()).digest()
+            if from_bytes(digest, "little") < target:
+                with counter.get_lock():
+                    counter.value += nonce - batch_start + 1
+                results.put(nonce)
+                stop.set()
+                return
+        with counter.get_lock():
+            counter.value += batch_end - batch_start
 
-      nonce += 1
 
-      # Check time and update progress bar in batches
-      if nonce % batch_size == 0:
-        elapsed = time.time() - start_time
-        if elapsed >= LOTTERY_DURATION:
-          pbar.n = LOTTERY_DURATION
-          pbar.refresh()
-          break
+def benchmark(static_header: bytes, seconds: float = 0.3) -> float:
+    """Single-core hashrate estimate (H/s) using the same midstate trick."""
+    midstate = hashlib.sha256(static_header[:64])
+    tail = static_header[64:]
+    sha256 = hashlib.sha256
+    n, t0 = 0, time.perf_counter()
+    while time.perf_counter() - t0 < seconds:
+        h = midstate.copy()
+        h.update(tail + _PACK_NONCE(n))
+        sha256(h.digest()).digest()
+        n += 1
+    return n / (time.perf_counter() - t0)
 
-        pbar.n = int(elapsed)
-        current_hashrate = nonce / elapsed if elapsed > 0 else 0
-        pbar.set_postfix_str(
-            f"{current_hashrate:,.0f} H/s | Nonce: {nonce:,}"
+
+def print_odds(hashrate: float, difficulty: int) -> None:
+    expected = 16**difficulty
+    secs = expected / hashrate if hashrate > 0 else float("inf")
+    btc_hashes = 16**19  # real network needs roughly ~19 leading hex zeros
+    years = btc_hashes / hashrate / (3600 * 24 * 365) if hashrate else 0
+    print(f"📊 --- LOTTERY ODDS (~{hashrate:,.0f} H/s total) ---")
+    print(f"🎯 Difficulty {difficulty}: 1 in {expected:,} hashes (~{secs:.1f}s avg)")
+    print(f"🌍 Real BTC network (~Diff 19): ~{years:,.0f} years with this script!\n")
+
+
+def mine_block(difficulty: int, duration: int, wallet: str, workers: int) -> None:
+    print(f"\n🚀 Bitcoin Lottery Miner started! (Difficulty: {difficulty})")
+    print(f"💳 Wallet : {wallet} (baked into Coinbase TX & Merkle Root)")
+    print(f"⏱️  Duration: {duration}s | 🧵 Workers: {workers}\n")
+
+    version = 1
+    prev_block_hash = bytes(32)
+    root = build_merkle_root(wallet)
+    timestamp = int(time.time())
+    bits = difficulty_to_bits(difficulty)
+    target = bits_to_target(bits)
+
+    # 76 bytes; the 4-byte nonce makes the 80-byte Bitcoin header.
+    static_header = struct.pack("<I32s32sII", version, prev_block_hash, root, timestamp, bits)
+
+    print_odds(benchmark(static_header) * workers, difficulty)
+
+    stop = mp.Event()
+    counter = mp.Value("Q", 0)
+    results = mp.Queue()
+    chunk = (MAX_NONCE + 1) // workers
+    procs = [
+        mp.Process(
+            target=worker,
+            args=(static_header, target, i * chunk, (i + 1) * chunk, stop, counter, results),
+            daemon=True,
         )
-        pbar.refresh()
+        for i in range(workers)
+    ]
 
-      # Prevent 32-bit unsigned integer overflow for nonce (max 4,294,967,295)
-      if nonce > 0xFFFFFFFF:
-        timestamp = int(time.time())
-        static_header = struct.pack(
-            "<I32s32sII", version, prev_block_hash, merkle_root, timestamp, bits
-        )
-        nonce = 0
+    start = time.perf_counter()
+    for p in procs:
+        p.start()
 
-  # Result output
-  total_time = time.time() - start_time
-  avg_hashrate = nonce / total_time if total_time > 0 else 0
+    with tqdm(
+        total=duration,
+        desc="⛏️  Mining",
+        unit="s",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}s [{elapsed}<{remaining}, {postfix}]",
+    ) as pbar:
+        while not stop.is_set() and time.perf_counter() - start < duration:
+            time.sleep(0.2)
+            elapsed = time.perf_counter() - start
+            pbar.n = min(int(elapsed), duration)
+            pbar.set_postfix_str(f"{counter.value / elapsed:,.0f} H/s | {counter.value:,} hashes")
+            pbar.refresh()
 
-  if winner:
-    print(f"\n\n🎉 WINNER! Valid Block found!")
-    print(f"🔑 Block Hash  : {winner['hash']}")
-    print(f"🌳 Merkle Root : {winner['merkle_root']}")
-    print(f"🎲 Winning Nonce: {winner['nonce']:,}")
-    print(
-        f"⚡ Avg Hashrate: {avg_hashrate:,.0f} H/s ({nonce:,} total hashes)"
-    )
-    print(f"⏱️  Time taken  : {winner['found_at']:.2f} seconds")
-    print(
-        f"💰 Reward      : {BLOCK_REWARD} BTC sent to {WALLET_ADDRESS}"
-        " (simulated)!"
-    )
-  else:
-    print(
-        f"\n\n❌ No block found in {LOTTERY_DURATION}s ({nonce:,} hashes"
-        f" tried at ~{avg_hashrate:,.0f} H/s)."
-    )
-    print(
-        "💡 Tip: Run again to try your luck, increase LOTTERY_DURATION, or"
-        " lower DIFFICULTY to 5!"
-    )
+    stop.set()
+    elapsed = time.perf_counter() - start
+    for p in procs:
+        p.join(timeout=2)
+        if p.is_alive():
+            p.terminate()
+
+    try:
+        nonce = results.get(timeout=1)
+    except queue.Empty:
+        nonce = None
+
+    total = counter.value
+    rate = total / elapsed if elapsed > 0 else 0
+
+    if nonce is None:
+        print(f"\n\n❌ No block found in {duration}s ({total:,} hashes at ~{rate:,.0f} H/s).")
+        print("💡 Tip: run again, raise the duration or lower the difficulty.")
+        return
+
+    block_hash = verify_block(static_header, nonce, bits)  # raises if invalid
+    print("\n\n🎉 WINNER! Valid Block found (verified)!")
+    print(f"🔑 Block Hash   : {block_hash}")
+    print(f"🌳 Merkle Root  : {root.hex()}")
+    print(f"🧮 Bits         : {bits:#010x}")
+    print(f"🎲 Winning Nonce: {nonce:,}")
+    print(f"⚡ Avg Hashrate : {rate:,.0f} H/s ({total:,} hashes)")
+    print(f"⏱️  Time taken   : {elapsed:.2f} seconds")
+    print(f"💰 Reward       : {BLOCK_REWARD} BTC sent to {wallet} (simulated)!")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Bitcoin Lottery Miner (educational)")
+    parser.add_argument("-d", "--difficulty", type=int, default=DIFFICULTY)
+    parser.add_argument("-t", "--time", type=int, default=LOTTERY_DURATION, help="seconds")
+    parser.add_argument("-w", "--wallet", default=WALLET_ADDRESS)
+    parser.add_argument("-j", "--workers", type=int, default=mp.cpu_count())
+    args = parser.parse_args()
+    if not 1 <= args.difficulty <= 63:
+        parser.error("difficulty must be between 1 and 63")
+    mine_block(args.difficulty, args.time, args.wallet, max(1, args.workers))
 
 
 if __name__ == "__main__":
-  mine_block()
+    main()
