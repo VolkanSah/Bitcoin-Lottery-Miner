@@ -1,6 +1,6 @@
 # Bitcoin Lottery Miner (Educational Simulator)
 # Copyright (C) 2025 Volkan Kücükbudak
-# Licensed under the GNU General Public License v3.0 (GPLv3)
+# Licensed under AGPL3
 """Educational Bitcoin-style miner.
 
 Optimizations compared to the naive version:
